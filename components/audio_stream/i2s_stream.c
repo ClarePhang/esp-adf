@@ -41,9 +41,6 @@
 #include "i2s_stream.h"
 
 static const char *TAG = "I2S_STREAM";
-#define I2S_STREAM_TASK_STACK (3072)
-#define I2S_STREAM_BUF_SIZE (2048)
-#define I2S_STREAM_TASK_PRIO (23)
 
 typedef struct i2s_stream {
     audio_stream_type_t type;
@@ -81,7 +78,7 @@ static esp_err_t i2s_mono_fix(int bits, uint8_t *sbuff, uint32_t len)
  *        DAC can only output 8bit data value.
  *        I2S DMA will still send 16bit or 32bit data, the highest 8bit contains DAC data.
  */
-static int i2s_dac_data_scale(int bits, uint8_t* sBuff, uint32_t len)
+static int i2s_dac_data_scale(int bits, uint8_t *sBuff, uint32_t len)
 {
     if (bits == 16) {
         short *buf16 = (short *)sBuff;
@@ -140,6 +137,7 @@ static esp_err_t _i2s_close(audio_element_handle_t self)
 {
     i2s_stream_t *i2s = (i2s_stream_t *)audio_element_getdata(self);
     int index = i2s->config.i2s_config.dma_buf_count;
+    size_t bytes_written = 0;
     uint8_t *buf = audio_calloc(1, i2s->config.i2s_config.dma_buf_len * 4);
 
     AUDIO_MEM_CHECK(TAG, buf, return ESP_ERR_NO_MEM);
@@ -148,7 +146,7 @@ static esp_err_t _i2s_close(audio_element_handle_t self)
         if ((i2s->config.i2s_config.mode & I2S_MODE_DAC_BUILT_IN) != 0) {
             memset(buf, 0x80, i2s->config.i2s_config.dma_buf_len * 4);
         }
-        i2s_write_bytes(i2s->config.i2s_port, (char *)buf, i2s->config.i2s_config.dma_buf_len * 4, portMAX_DELAY);
+        i2s_write(i2s->config.i2s_port, (char *)buf, i2s->config.i2s_config.dma_buf_len * 4, &bytes_written, portMAX_DELAY);
     }
     if (buf) {
         free(buf);
@@ -166,23 +164,25 @@ static esp_err_t _i2s_close(audio_element_handle_t self)
 static int _i2s_read(audio_element_handle_t self, char *buffer, int len, TickType_t ticks_to_wait, void *context)
 {
     i2s_stream_t *i2s = (i2s_stream_t *)audio_element_getdata(self);
-    int r_len =  i2s_read_bytes(i2s->config.i2s_port, buffer, len, ticks_to_wait);
+    size_t bytes_read = 0;
+    i2s_read(i2s->config.i2s_port, buffer, len, &bytes_read, ticks_to_wait);
     audio_element_info_t info;
     audio_element_getinfo(self, &info);
-    if (r_len > 0) {
+    if (bytes_read > 0) {
         if (info.channels == 1) {
-            i2s_mono_fix(info.bits, (uint8_t *)buffer, r_len);
+            i2s_mono_fix(info.bits, (uint8_t *)buffer, bytes_read);
         }
-        info.byte_pos += r_len;
+        info.byte_pos += bytes_read;
         audio_element_setinfo(self, &info);
     }
-    return r_len;
+    return bytes_read;
 }
 
 static int _i2s_write(audio_element_handle_t self, char *buffer, int len, TickType_t ticks_to_wait, void *context)
 {
     i2s_stream_t *i2s = (i2s_stream_t *)audio_element_getdata(self);
     audio_element_info_t info;
+    size_t bytes_written = 0;
     audio_element_getinfo(self, &info);
     if (info.channels == 1) {
         i2s_mono_fix(info.bits, (uint8_t *)buffer, len);
@@ -190,16 +190,17 @@ static int _i2s_write(audio_element_handle_t self, char *buffer, int len, TickTy
     if ((i2s->config.i2s_config.mode & I2S_MODE_DAC_BUILT_IN) != 0) {
         i2s_dac_data_scale(info.bits, (uint8_t *)buffer, len);
     }
-    int w_len = i2s_write_bytes(i2s->config.i2s_port, buffer, len, ticks_to_wait);
-    info.byte_pos += w_len;
+    i2s_write(i2s->config.i2s_port, buffer, len, &bytes_written, ticks_to_wait);
+    info.byte_pos += bytes_written;
     audio_element_setinfo(self, &info);
-    return w_len;
+    return bytes_written;
 }
 
 static int _i2s_process(audio_element_handle_t self, char *in_buffer, int in_len)
 {
     int r_size = audio_element_input(self, in_buffer, in_len);
     int w_size = 0;
+    size_t bytes_written = 0;
     if (r_size == AEL_IO_TIMEOUT) {
         memset(in_buffer, 0, in_len);
         r_size = in_len;
@@ -215,7 +216,7 @@ static int _i2s_process(audio_element_handle_t self, char *in_buffer, int in_len
         AUDIO_MEM_CHECK(TAG, buf, return ESP_FAIL);
 
         while (index--) {
-            i2s_write_bytes(i2s->config.i2s_port, (char *)buf, i2s->config.i2s_config.dma_buf_len * 4, portMAX_DELAY);
+            i2s_write(i2s->config.i2s_port, (char *)buf, i2s->config.i2s_config.dma_buf_len * 4, &bytes_written, portMAX_DELAY);
         }
         if (buf) {
             free(buf);
@@ -239,7 +240,7 @@ esp_err_t i2s_stream_set_clk(audio_element_handle_t i2s_stream, int rate, int bi
     i2s_info.channels = ch;
     i2s_info.sample_rates = rate;
     audio_element_setinfo(i2s_stream, &i2s_info);
-    
+
     if (i2s_set_clk(i2s->config.i2s_port, rate, bits, ch) == ESP_FAIL) {
         ESP_LOGE(TAG, "i2s_set_clk failed, type = %d,port:%d", i2s->config.type, i2s->config.i2s_port);
         err = ESP_FAIL;
@@ -258,8 +259,10 @@ audio_element_handle_t i2s_stream_init(i2s_stream_cfg_t *config)
     cfg.close = _i2s_close;
     cfg.process = _i2s_process;
     cfg.destroy = _i2s_destroy;
-    cfg.task_prio = I2S_STREAM_TASK_PRIO;
-    cfg.task_stack = I2S_STREAM_TASK_STACK;
+    cfg.task_stack = config->task_stack;
+    cfg.task_prio = config->task_prio;
+    cfg.task_core = config->task_core;
+    cfg.out_rb_size = config->out_rb_size;
     cfg.tag = "iis";
     cfg.buffer_len = I2S_STREAM_BUF_SIZE;
     i2s_stream_t *i2s = audio_calloc(1, sizeof(i2s_stream_t));
@@ -290,16 +293,19 @@ audio_element_handle_t i2s_stream_init(i2s_stream_cfg_t *config)
 
     audio_element_setinfo(el, &info);
     i2s_driver_install(i2s->config.i2s_port, &i2s->config.i2s_config, 0, NULL);
-    
-    if((config->i2s_config.mode & I2S_MODE_DAC_BUILT_IN) != 0) {
+
+    if ((config->i2s_config.mode & I2S_MODE_DAC_BUILT_IN) != 0) {
         i2s_set_dac_mode(I2S_DAC_CHANNEL_BOTH_EN);
     } else {
         i2s_set_pin(i2s->config.i2s_port, &i2s->config.i2s_pin_config);
     }
+
+#if (CONFIG_ESP_LYRAT_V4_3_BOARD || CONFIG_ESP_LYRAT_V4_2_BOARD)  
     if (i2s->config.i2s_port == 0) {
         SET_PERI_REG_BITS(PIN_CTRL, CLK_OUT1, 0, CLK_OUT1_S);
     }
-    PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO0_U, FUNC_GPIO0_CLK_OUT1);
-
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO0_U, FUNC_GPIO0_CLK_OUT1);  
+#endif
+    
     return el;
 }

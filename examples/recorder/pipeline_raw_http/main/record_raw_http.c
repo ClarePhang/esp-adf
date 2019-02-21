@@ -142,10 +142,10 @@ void app_main(void)
     mem_assert(pipeline);
 
     ESP_LOGI(TAG, "[3.1] Create http stream to post data to server");
-    http_stream_cfg_t http_cfg = {
-        .type = AUDIO_STREAM_WRITER,
-        .event_handle = _http_stream_event_handle,
-    };
+
+    http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
+    http_cfg.type = AUDIO_STREAM_WRITER;
+    http_cfg.event_handle = _http_stream_event_handle;
     http_stream_writer = http_stream_init(&http_cfg);
 
     ESP_LOGI(TAG, "[3.2] Create i2s stream to read audio data from codec chip");
@@ -210,6 +210,9 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "[ 6 ] Stop audio_pipeline");
     audio_pipeline_terminate(pipeline);
+
+    audio_pipeline_unregister(pipeline, http_stream_writer);
+    audio_pipeline_unregister(pipeline, i2s_stream_reader);
 
     /* Terminal the pipeline before removing the listener */
     audio_pipeline_remove_listener(pipeline);

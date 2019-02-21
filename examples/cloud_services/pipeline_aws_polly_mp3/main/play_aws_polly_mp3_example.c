@@ -32,7 +32,7 @@
 #include "aws_sig_v4_signing.h"
 
 #define AWS_POLLY_ENDPOINT "https://polly."CONFIG_AWS_POLLY_REGION".amazonaws.com/v1/speech"
-#define TTS_TEXT  "Espressif Systems is a fabless semiconductor company, with headquarter in Shanghai Zhangjiang High-Tech Park, providing low power Wi-Fi and Bluetooth SoCs and wireless solutions for Internet of Things applications"
+#define TTS_TEXT  "Espressif Systems is a multinational, fabless semiconductor company, with headquarters in Shanghai, China. We specialize in producing highly-integrated, low-power, WiFi-and-Bluetooth IoT solutions. Among our most popular chips are ESP8266 and ESP32. We are committed to creating IoT solutions that are power-efficient, robust and secure."
 static const char *polly_payload = "{\"OutputFormat\":\"mp3\",\"SampleRate\":\"22050\",\"Text\":\""TTS_TEXT"\",\"TextType\":\"text\",\"VoiceId\":\"Joanna\"}";
 
 static const char *TAG = "AWS_POLLY_EXAMPLE";
@@ -74,11 +74,17 @@ aws_sig_v4_config_t polly_sigv4_config = {
 
 int _http_stream_event_handle(http_stream_event_msg_t *msg)
 {
+    static int total_len = 0;
     esp_http_client_handle_t http_client = (esp_http_client_handle_t)msg->http_client;
-    ESP_LOGI(TAG, "http event_id = %d", msg->event_id);
+    if (msg->event_id == HTTP_STREAM_ON_RESPONSE) {
+        total_len += msg->buffer_len;
+        printf("\033[A\33[2K\rTotal bytes read: %d bytes\n", total_len);
+        return ESP_OK;
+    }
     if (msg->event_id != HTTP_STREAM_PRE_REQUEST) {
         return ESP_OK;
     }
+    total_len = 0;
     struct timeval tv;
     time_t nowtime;
     struct tm *nowtm = NULL;
@@ -150,10 +156,9 @@ void app_main(void)
     mem_assert(pipeline);
 
     ESP_LOGI(TAG, "[2.1] Create http stream to read data");
-    http_stream_cfg_t http_cfg = {
-        .event_handle = _http_stream_event_handle,
-        .type = AUDIO_STREAM_READER,
-    };
+    http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
+    http_cfg.event_handle = _http_stream_event_handle;
+    http_cfg.type = AUDIO_STREAM_READER;
     http_stream_reader = http_stream_init(&http_cfg);
 
     ESP_LOGI(TAG, "[2.2] Create i2s stream to write data to codec chip");
@@ -196,13 +201,13 @@ void app_main(void)
         audio_event_iface_msg_t msg;
         esp_err_t ret = audio_event_iface_listen(evt, &msg, portMAX_DELAY);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "[ * ] Event interface error : %d", ret); 
+            ESP_LOGE(TAG, "[ * ] Event interface error : %d", ret);
             continue;
         }
 
         if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT
-                && msg.source == (void *) mp3_decoder
-                && msg.cmd == AEL_MSG_CMD_REPORT_MUSIC_INFO) {
+            && msg.source == (void *) mp3_decoder
+            && msg.cmd == AEL_MSG_CMD_REPORT_MUSIC_INFO) {
             audio_element_info_t music_info = {0};
             audio_element_getinfo(mp3_decoder, &music_info);
 
@@ -216,8 +221,8 @@ void app_main(void)
 
         /* Stop when the last pipeline element (i2s_stream_writer in this case) receives stop event */
         if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT && msg.source == (void *) i2s_stream_writer
-                && msg.cmd == AEL_MSG_CMD_REPORT_STATUS && (int) msg.data == AEL_STATUS_STATE_STOPPED) {
-            ESP_LOGW(TAG, "[ * ] Stop event received"); 
+            && msg.cmd == AEL_MSG_CMD_REPORT_STATUS && (int) msg.data == AEL_STATUS_STATE_STOPPED) {
+            ESP_LOGW(TAG, "[ * ] Stop event received");
             break;
         }
     }
@@ -225,7 +230,11 @@ void app_main(void)
     ESP_LOGI(TAG, "[ 6 ] Stop audio_pipeline");
     audio_pipeline_terminate(pipeline);
 
-    /* Terminal the pipeline before removing the listener */
+    audio_pipeline_unregister(pipeline, http_stream_reader);
+    audio_pipeline_unregister(pipeline, mp3_decoder);
+    audio_pipeline_unregister(pipeline, i2s_stream_writer);
+
+    /* Terminate the pipeline before removing the listener */
     audio_pipeline_remove_listener(pipeline);
 
     /* Stop all periph before removing the listener */

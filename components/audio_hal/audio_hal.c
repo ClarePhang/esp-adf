@@ -31,6 +31,7 @@
 #include "audio_mutex.h"
 #include "es8374.h"
 #include "es8388.h"
+#include "zl38063.h"
 
 static const char *TAG = "AUDIO_HAL";
 
@@ -41,14 +42,14 @@ static const char *TAG = "AUDIO_HAL";
     }
 
 struct audio_hal {
-    esp_err_t (*audio_codec_initialize)(audio_hal_codec_config_t* codec_cfg);
+    esp_err_t (*audio_codec_initialize)(audio_hal_codec_config_t *codec_cfg);
     esp_err_t (*audio_codec_deinitialize)(void);
     esp_err_t (*audio_codec_ctrl)(audio_hal_codec_mode_t mode, audio_hal_ctrl_t ctrl_state);
-    esp_err_t (*audio_codec_config_iface)(audio_hal_codec_mode_t mode, audio_hal_codec_i2s_iface_t* iface);
+    esp_err_t (*audio_codec_config_iface)(audio_hal_codec_mode_t mode, audio_hal_codec_i2s_iface_t *iface);
     esp_err_t (*audio_codec_set_volume)(int volume);
-    esp_err_t (*audio_codec_get_volume)(int* volume);
+    esp_err_t (*audio_codec_get_volume)(int *volume);
     xSemaphoreHandle audio_hal_lock;
-    void* handle;
+    void *handle;
 };
 
 static struct audio_hal audio_hal_codecs_default[] = {
@@ -67,25 +68,33 @@ static struct audio_hal audio_hal_codecs_default[] = {
         .audio_codec_config_iface = es8374_config_i2s,
         .audio_codec_set_volume = es8374_set_voice_volume,
         .audio_codec_get_volume = es8374_get_voice_volume,
+    },
+    {
+        .audio_codec_initialize = zl38063_init,
+        .audio_codec_deinitialize = zl38063_deinit,
+        .audio_codec_ctrl = zl38063_ctrl_state,
+        .audio_codec_config_iface = zl38063_config_i2s,
+        .audio_codec_set_volume = zl38063_set_voice_volume,
+        .audio_codec_get_volume = zl38063_get_voice_volume,
     }
 };
 
-audio_hal_handle_t audio_hal_init(audio_hal_codec_config_t* audio_hal_conf, int index)
+audio_hal_handle_t audio_hal_init(audio_hal_codec_config_t *audio_hal_conf, int index)
 {
     esp_err_t ret  = 0;
     if (NULL != audio_hal_codecs_default[index].handle) {
+        ESP_LOGW(TAG,"The hal has been already initialized!");
         return audio_hal_codecs_default[index].handle;
     }
-    audio_hal_handle_t audio_hal =(audio_hal_handle_t) audio_calloc(1, sizeof(struct audio_hal));
+    audio_hal_handle_t audio_hal = (audio_hal_handle_t) audio_calloc(1, sizeof(struct audio_hal));
     AUDIO_MEM_CHECK(TAG, audio_hal, return NULL);
     memcpy(audio_hal, &audio_hal_codecs_default[index], sizeof(struct audio_hal));
     audio_hal->audio_hal_lock = mutex_create();
 
     AUDIO_MEM_CHECK(TAG, audio_hal->audio_hal_lock, {
         free(audio_hal);
-        return NULL;
-    });
-
+        return NULL; 
+    }); 
     mutex_lock(audio_hal->audio_hal_lock);
     ret  = audio_hal->audio_codec_initialize(audio_hal_conf);
     ret |= audio_hal->audio_codec_config_iface(AUDIO_HAL_CODEC_MODE_BOTH, &audio_hal_conf->i2s_iface);
@@ -93,7 +102,6 @@ audio_hal_handle_t audio_hal_init(audio_hal_codec_config_t* audio_hal_conf, int 
     audio_hal->handle = audio_hal;
     audio_hal_codecs_default[index].handle = audio_hal;
     mutex_unlock(audio_hal->audio_hal_lock);
-    es8388_pa_power(true);
     return audio_hal;
 }
 
@@ -122,7 +130,7 @@ esp_err_t audio_hal_ctrl_codec(audio_hal_handle_t audio_hal, audio_hal_codec_mod
     return ret;
 }
 
-esp_err_t audio_hal_config_iface(audio_hal_handle_t audio_hal, audio_hal_codec_mode_t mode, audio_hal_codec_i2s_iface_t* iface)
+esp_err_t audio_hal_config_iface(audio_hal_handle_t audio_hal, audio_hal_codec_mode_t mode, audio_hal_codec_i2s_iface_t *iface)
 {
     esp_err_t ret = 0;
     AUDIO_HAL_CHECK_NULL(audio_hal, "audio_hal handle is null", -1);
@@ -143,7 +151,7 @@ esp_err_t audio_hal_set_volume(audio_hal_handle_t audio_hal, int volume)
     return ret;
 }
 
-esp_err_t audio_hal_get_volume(audio_hal_handle_t audio_hal, int* volume)
+esp_err_t audio_hal_get_volume(audio_hal_handle_t audio_hal, int *volume)
 {
     esp_err_t ret;
     AUDIO_HAL_CHECK_NULL(audio_hal, "audio_hal handle is null", -1);
